@@ -73,11 +73,11 @@ class Generator(nn.Module):
             return layers
 
         self.model = nn.Sequential(
-            *block(opt.latent_dim, 128*thin_factor, normalize=False),
-            *block(128*thin_factor, 256*thin_factor),
-            *block(256*thin_factor, 512*thin_factor),
-            *block(512*thin_factor, 1024*thin_factor),
-            nn.Linear(1024*thin_factor, int(np.prod(img_shape))),
+            *block(opt.latent_dim, int(128*thin_factor), normalize=False),
+            *block(int(128*thin_factor), int(256*thin_factor)),
+            *block(int(256*thin_factor), int(512*thin_factor)),
+            *block(int(512*thin_factor), int(1024*thin_factor)),
+            nn.Linear(int(1024*thin_factor), int(np.prod(img_shape))),
             nn.Tanh()
         )
 
@@ -167,7 +167,7 @@ lambda_distil = 1
 generator = Generator()
 discriminator = Discriminator()
 student = Generator(thin_factor=opt.thin_factor)
-distillation = Fit2DHomoGaussianLoss(3, 3)
+distillation = Fit2DHomoGaussianLoss(opt.channels, opt.channels)
 
 if cuda:
     generator.cuda()
@@ -197,7 +197,7 @@ for param in generator.parameters():
 
 # Optimizers
 #optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr * 10-2, betas=(opt.b1, opt.b2))
+optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr * 1e-2, betas=(opt.b1, opt.b2))
 optimizer_S = torch.optim.Adam(student.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_T = torch.optim.Adam(distillation.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
@@ -307,8 +307,8 @@ for epoch in range(opt.n_epochs):
                            'student': student.state_dict(),
                            'distillation': distillation.state_dict(),
                            'optimizer_D': optimizer_D.state_dict(),
-                           'optimizer_S': optimizer_S.state_dict()},
+                           'optimizer_S': optimizer_S.state_dict(),
                            'optimizer_T': optimizer_T.state_dict()},
-                          '%s/Epoch_(%d).ckpt' % (ckpt_dir, epoch + 1),
+                          '%s/Epoch_(%d)_student.ckpt' % (ckpt_dir, epoch + 1),
                           max_keep=2)
 

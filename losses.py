@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from models.modules import conv1x1, Conv1x1Regressor, LinearRegressor
+from modules import conv1x1, Conv1x1Regressor, LinearRegressor
 
 """
 LOSS WITHOUT REGRESSOR (ASSUMES EQUAL DIMENSION)
