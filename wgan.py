@@ -56,6 +56,15 @@ cuda = True if torch.cuda.is_available() else False
 
 img_shape = (opt.channels, opt.img_size, opt.img_size)
 
+#utils.mkdir(ckpt_dir)
+ckpt_dir = '%s/checkpoints' % opt.dir
+summ_dir = '%s/summaries' % opt.dir
+img_dir = '%s/images' % opt.dir
+
+os.makedirs(opt.dir, exist_ok=True)
+os.makedirs(ckpt_dir, exist_ok=True)
+os.makedirs(img_dir, exist_ok=True)
+os.makedirs(summ_dir, exist_ok=True)
 
 # In[3]:
 
@@ -182,10 +191,6 @@ Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 # In[9]:
 
 
-#utils.mkdir(ckpt_dir)
-os.makedirs(opt.dir, exist_ok=True)
-ckpt_dir = '%s/checkpoints' % opt.dir
-os.makedirs(ckpt_dir, exist_ok=True)
 try:
     ckpt = utils.load_checkpoint(ckpt_dir)
     start_epoch = ckpt['epoch']
@@ -202,7 +207,7 @@ except:
 
 
 os.makedirs("images", exist_ok=True)
-writer = tensorboardX.SummaryWriter('./summaries')
+writer = tensorboardX.SummaryWriter('%s/summaries' % opt.dir)
 
 
 # In[ ]:
@@ -280,7 +285,8 @@ for epoch in range(opt.n_epochs):
                 generator.eval()
                 f_imgs_sample = generator(z_sample)
                 #save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
-                save_image(f_imgs_sample.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
+                save_image(f_imgs_sample.data[:25], "%s/images/%d.png" % (
+                    opt.dir, batches_done), nrow=5, normalize=True)
 
             batches_done += opt.n_critic
 
