@@ -46,6 +46,7 @@ parser.add_argument("--clip_value", type=float, default=0.01, help="lower and up
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument("--gpu_id", type=int, default=2, help="gpu id")
 parser.add_argument("--thin_factor", type=float, default=0.5, help="thinning generator by a factor")
+parser.add_argument("--dir", type=str, default='./', help="directory of each experiment")
 
 #sys.argv = 'main.py'
 #sys.argv = sys.argv.split(' ')
@@ -81,8 +82,6 @@ class Generator(nn.Module):
             nn.Tanh()
         )
 
-        utils.init_weights(self.model)
-
     def forward(self, z):
         img = self.model(z)
         img = img.view(img.shape[0], *img_shape)
@@ -103,8 +102,6 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(256, 1),
         )
-
-        utils.init_weights(self.model)
 
     def forward(self, img):
         img_flat = img.view(img.shape[0], -1)
@@ -141,10 +138,10 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
 
 
 # Configure data loader
-os.makedirs("../../data/mnist", exist_ok=True)
+os.makedirs("data/mnist", exist_ok=True)
 dataloader = torch.utils.data.DataLoader(
     datasets.MNIST(
-        "../../data/mnist",
+        "data/mnist",
         train=True,
         download=True,
         transform=transforms.Compose(
@@ -169,13 +166,19 @@ discriminator = Discriminator()
 student = Generator(thin_factor=opt.thin_factor)
 distillation = Fit2DHomoGaussianLoss(opt.channels, opt.channels)
 
+utils.init_weights(generator)
+utils.init_weights(discriminator)
+utils.init_weights(student)
+utils.init_weights(distillation)
+
+
 if cuda:
     generator.cuda()
     discriminator.cuda()
     student.cuda()
     distillation.cuda()
 
-ckpt_dir = './checkpoints'
+ckpt_dir = '%s/checkpoints' % opt.dir
 utils.mkdir(ckpt_dir)
 try:
     ckpt = utils.load_checkpoint(ckpt_dir)

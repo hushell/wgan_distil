@@ -9,7 +9,6 @@ import os
 import numpy as np
 import math
 import sys
-#from tqdm import tqdm, tqdm_notebook
 from tqdm import tqdm
 
 import torchvision.transforms as transforms
@@ -44,9 +43,11 @@ parser.add_argument("--n_critic", type=int, default=5, help="number of training 
 parser.add_argument("--clip_value", type=float, default=0.01, help="lower and upper clip value for disc. weights")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument("--gpu_id", type=int, default=2, help="gpu id")
+parser.add_argument("--thin_factor", type=float, default=0.5, help="thinning generator by a factor")
+parser.add_argument("--dir", type=str, default='./', help="directory of each experiment")
 
-sys.argv = 'main.py'
-sys.argv = sys.argv.split(' ')
+#sys.argv = 'main.py'
+#sys.argv = sys.argv.split(' ')
 opt = parser.parse_args()
 print(opt)
 
@@ -60,7 +61,7 @@ img_shape = (opt.channels, opt.img_size, opt.img_size)
 
 
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self, thin_factor=1.0):
         super(Generator, self).__init__()
 
         def block(in_feat, out_feat, normalize=True):
@@ -71,11 +72,11 @@ class Generator(nn.Module):
             return layers
 
         self.model = nn.Sequential(
-            *block(opt.latent_dim, 128, normalize=False),
-            *block(128, 256),
-            *block(256, 512),
-            *block(512, 1024),
-            nn.Linear(1024, int(np.prod(img_shape))),
+            *block(opt.latent_dim, int(128*thin_factor), normalize=False),
+            *block(int(128*thin_factor), int(256*thin_factor)),
+            *block(int(256*thin_factor), int(512*thin_factor)),
+            *block(int(512*thin_factor), int(1024*thin_factor)),
+            nn.Linear(int(1024*thin_factor), int(np.prod(img_shape))),
             nn.Tanh()
         )
 
@@ -99,6 +100,8 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(256, 1),
         )
+
+        utils.init_weights(self.model)
 
     def forward(self, img):
         img_flat = img.view(img.shape[0], -1)
@@ -135,10 +138,10 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
 
 
 # Configure data loader
-os.makedirs("../../data/mnist", exist_ok=True)
+os.makedirs("data/mnist", exist_ok=True)
 dataloader = torch.utils.data.DataLoader(
     datasets.MNIST(
-        "../../data/mnist",
+        "data/mnist",
         train=True,
         download=True,
         transform=transforms.Compose(
@@ -156,8 +159,8 @@ dataloader = torch.utils.data.DataLoader(
 # Loss weight for gradient penalty
 lambda_gp = 10
 
-# Initialize generator and discriminator
-generator = Generator()
+# Models
+generator = Generator(opt.thin_factor)
 discriminator = Discriminator()
 
 if cuda:
@@ -179,15 +182,17 @@ Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 # In[9]:
 
 
-ckpt_dir = './checkpoints'
-utils.mkdir(ckpt_dir)
+#utils.mkdir(ckpt_dir)
+os.makedirs(opt.dir, exist_ok=True)
+ckpt_dir = '%s/checkpoints' % opt.dir
+os.makedirs(ckpt_dir, exist_ok=True)
 try:
     ckpt = utils.load_checkpoint(ckpt_dir)
     start_epoch = ckpt['epoch']
     discriminator.load_state_dict(ckpt['discriminator'])
     generator.load_state_dict(ckpt['generator'])
-    optimizer_G.load_state_dict(ckpt['optimizer_D'])
-    optimizer_D.load_state_dict(ckpt['optimizer_G'])
+    optimizer_G.load_state_dict(ckpt['optimizer_G'])
+    optimizer_D.load_state_dict(ckpt['optimizer_D'])
 except:
     print(' [*] No checkpoint!')
     start_epoch = 0
@@ -272,9 +277,9 @@ for epoch in range(opt.n_epochs):
                         epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
                 tdl.set_description(msg)
 
-                #save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
                 generator.eval()
                 f_imgs_sample = generator(z_sample)
+                #save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
                 save_image(f_imgs_sample.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
 
             batches_done += opt.n_critic
