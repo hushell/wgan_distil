@@ -80,6 +80,7 @@ class Generator(nn.Module):
             nn.Linear(1024*thin_factor, int(np.prod(img_shape))),
             nn.Tanh()
         )
+
         utils.init_weights(self.model)
 
     def forward(self, z):
@@ -102,6 +103,7 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(256, 1),
         )
+
         utils.init_weights(self.model)
 
     def forward(self, img):
@@ -159,33 +161,19 @@ dataloader = torch.utils.data.DataLoader(
 
 # Loss weight for gradient penalty
 lambda_gp = 10
+lambda_distil = 1
 
-# Initialize generator and discriminator
+# Models
 generator = Generator()
 discriminator = Discriminator()
 student = Generator(thin_factor=opt.thin_factor)
-distillation = Fit2DHomoGaussianLoss()
+distillation = Fit2DHomoGaussianLoss(3, 3)
 
 if cuda:
     generator.cuda()
     discriminator.cuda()
     student.cuda()
-
-
-# In[8]:
-
-
-# Optimizers
-optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_S = torch.optim.Adam(student.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-
-# TODO: torch.set_default_tensor_type(t) OR device, randn
-Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-
-
-# In[9]:
-
+    distillation.cuda()
 
 ckpt_dir = './checkpoints'
 utils.mkdir(ckpt_dir)
@@ -194,11 +182,27 @@ try:
     start_epoch = ckpt['epoch']
     discriminator.load_state_dict(ckpt['discriminator'])
     generator.load_state_dict(ckpt['generator'])
-    optimizer_G.load_state_dict(ckpt['optimizer_D'])
-    optimizer_D.load_state_dict(ckpt['optimizer_G'])
+    optimizer_D.load_state_dict(ckpt['optimizer_D'])
 except:
     print(' [*] No checkpoint!')
     start_epoch = 0
+
+# Freeze teacher parameters
+for param in generator.parameters():
+    param.requires_grad = False
+
+
+# In[8]:
+
+
+# Optimizers
+#optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr * 10-2, betas=(opt.b1, opt.b2))
+optimizer_S = torch.optim.Adam(student.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_T = torch.optim.Adam(distillation.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+# TODO: torch.set_default_tensor_type(t) OR device, randn
+Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 
 # In[ ]:
@@ -221,7 +225,9 @@ for epoch in range(opt.n_epochs):
 
         step = epoch * len(dataloader) + i + 1
 
-        generator.train()
+        discriminator.train()
+        student.train()
+        distillation.train()
 
         # Configure input
         real_imgs = Variable(imgs.type(Tensor))
@@ -236,7 +242,7 @@ for epoch in range(opt.n_epochs):
         z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim))))
 
         # Generate a batch of images
-        fake_imgs = generator(z)
+        fake_imgs = student(z)
 
         # Real images
         real_validity = discriminator(real_imgs)
@@ -258,41 +264,51 @@ for epoch in range(opt.n_epochs):
         #  Train Generator
         # -----------------
 
-        optimizer_G.zero_grad()
+        optimizer_S.zero_grad()
+        optimizer_T.zero_grad()
 
         # Train the generator every n_critic steps
         if i % opt.n_critic == 0:
 
-            # Generate a batch of images
-            fake_imgs = generator(z)
-            # Loss measures generator's ability to fool the discriminator
-            # Train on fake images
+            teacher_imgs = generator(z)
+            fake_imgs = student(z)
+
             fake_validity = discriminator(fake_imgs)
             g_loss = -torch.mean(fake_validity)
 
-            g_loss.backward()
-            optimizer_G.step()
+            t_loss = distillation(fake_imgs, teacher_imgs)
+            loss = g_loss + lambda_distil * t_loss
+
+            loss.backward()
+            optimizer_S.step()
+            optimizer_T.step()
 
             writer.add_scalar('G/g_loss', g_loss.item(), global_step=step)
+            writer.add_scalar('G/t_loss', t_loss.item(), global_step=step)
 
+            # print and save
             if batches_done % opt.sample_interval == 0:
-                msg = '[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]' % (
-                        epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
+                msg = '[Epoch %d/%d] [Batch %d/%d] [D: %.4f] [G: %.4f] [T: %.4f]' % (
+                        epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item(), t_loss.item())
                 tdl.set_description(msg)
 
-                #save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
                 generator.eval()
-                f_imgs_sample = generator(z_sample)
-                save_image(f_imgs_sample.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
+                student.eval()
+                teacher_sample = generator(z_sample)
+                save_image(teacher_sample.data[:25], "images/t_%d.png" % batches_done, nrow=5, normalize=True)
+                student_sample = student(z_sample)
+                save_image(student_sample.data[:25], "images/s_%d.png" % batches_done, nrow=5, normalize=True)
 
             batches_done += opt.n_critic
 
     # checkpoint at epoch
     utils.save_checkpoint({'epoch': epoch + 1,
                            'discriminator': discriminator.state_dict(),
-                           'generator': generator.state_dict(),
+                           'student': student.state_dict(),
+                           'distillation': distillation.state_dict(),
                            'optimizer_D': optimizer_D.state_dict(),
-                           'optimizer_G': optimizer_G.state_dict()},
+                           'optimizer_S': optimizer_S.state_dict()},
+                           'optimizer_T': optimizer_T.state_dict()},
                           '%s/Epoch_(%d).ckpt' % (ckpt_dir, epoch + 1),
                           max_keep=2)
 

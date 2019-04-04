@@ -24,10 +24,6 @@ class Conv1x1Regressor(nn.Module):
             self.layers.extend([
                 nn.BatchNorm2d(planes[i]),
                 nn.ReLU(inplace=True)])
-
-            #if i < depth-1:
-            #    self.layers.append(nn.Dropout(inplace=False, p=0.5))
-
             self.layers.append(conv1x1(planes[i], planes[i+1]))
 
     def forward(self, input):
