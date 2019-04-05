@@ -25,9 +25,10 @@ import torch.autograd as autograd
 import torch
 import tensorboardX
 import utils
-from losses import FitHomoGaussianLoss, Fit2DHomoGaussianLoss
+from losses import FitHomoGaussianLoss,Fit2DHomoGaussianLoss,MSELoss
 
 
+##########################################################################
 # In[2]:
 
 
@@ -37,7 +38,7 @@ parser.add_argument("--batch_size", type=int, default=64, help="size of the batc
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+parser.add_argument("--n_cpu", type=int, default=2, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
 parser.add_argument("--img_size", type=int, default=28, help="size of each image dimension")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
@@ -58,7 +59,18 @@ cuda = True if torch.cuda.is_available() else False
 
 img_shape = (opt.channels, opt.img_size, opt.img_size)
 
+#utils.mkdir(ckpt_dir)
+ckpt_dir = '%s/checkpoints' % opt.dir
+summ_dir = '%s/summaries' % opt.dir
+img_dir = '%s/images' % opt.dir
 
+os.makedirs(opt.dir, exist_ok=True)
+os.makedirs(ckpt_dir, exist_ok=True)
+os.makedirs(img_dir, exist_ok=True)
+os.makedirs(summ_dir, exist_ok=True)
+
+
+##########################################################################
 # In[3]:
 
 
@@ -134,6 +146,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     return gradient_penalty
 
 
+##########################################################################
 # In[6]:
 
 
@@ -153,18 +166,20 @@ dataloader = torch.utils.data.DataLoader(
 )
 
 
+##########################################################################
 # In[7]:
 
 
 # Loss weight for gradient penalty
 lambda_gp = 10
-lambda_distil = 1
+lambda_distil = 0.01
 
 # Models
 generator = Generator()
 discriminator = Discriminator()
 student = Generator(thin_factor=opt.thin_factor)
-distillation = Fit2DHomoGaussianLoss(opt.channels, opt.channels)
+#distillation = Fit2DHomoGaussianLoss(opt.channels, opt.channels)
+distillation = MSELoss()
 
 utils.init_weights(generator)
 utils.init_weights(discriminator)
@@ -178,14 +193,13 @@ if cuda:
     student.cuda()
     distillation.cuda()
 
-ckpt_dir = '%s/checkpoints' % opt.dir
-utils.mkdir(ckpt_dir)
 try:
-    ckpt = utils.load_checkpoint(ckpt_dir)
-    start_epoch = ckpt['epoch']
-    discriminator.load_state_dict(ckpt['discriminator'])
+    ckpt = utils.load_checkpoint('./checkpoints')
+    #start_epoch = ckpt['epoch']
+    #discriminator.load_state_dict(ckpt['discriminator'])
+    start_epoch = 0
     generator.load_state_dict(ckpt['generator'])
-    optimizer_D.load_state_dict(ckpt['optimizer_D'])
+    #optimizer_D.load_state_dict(ckpt['optimizer_D'])
 except:
     print(' [*] No checkpoint!')
     start_epoch = 0
@@ -195,6 +209,7 @@ for param in generator.parameters():
     param.requires_grad = False
 
 
+##########################################################################
 # In[8]:
 
 
@@ -202,17 +217,18 @@ for param in generator.parameters():
 #optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr * 1e-2, betas=(opt.b1, opt.b2))
 optimizer_S = torch.optim.Adam(student.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_T = torch.optim.Adam(distillation.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+#optimizer_T = torch.optim.Adam(distillation.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 # TODO: torch.set_default_tensor_type(t) OR device, randn
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 
+##########################################################################
 # In[ ]:
 
 
 os.makedirs("images", exist_ok=True)
-writer = tensorboardX.SummaryWriter('./summaries')
+writer = tensorboardX.SummaryWriter(summ_dir)
 
 
 # In[ ]:
@@ -228,8 +244,8 @@ for epoch in range(opt.n_epochs):
 
         step = epoch * len(dataloader) + i + 1
 
-        discriminator.train()
         student.train()
+        discriminator.train()
         distillation.train()
 
         # Configure input
@@ -268,7 +284,7 @@ for epoch in range(opt.n_epochs):
         # -----------------
 
         optimizer_S.zero_grad()
-        optimizer_T.zero_grad()
+        #optimizer_T.zero_grad()
 
         # Train the generator every n_critic steps
         if i % opt.n_critic == 0:
@@ -280,11 +296,11 @@ for epoch in range(opt.n_epochs):
             g_loss = -torch.mean(fake_validity)
 
             t_loss = distillation(fake_imgs, teacher_imgs)
-            loss = g_loss + lambda_distil * t_loss
+            loss = lambda_distil * g_loss + (1-lambda_distil) * t_loss
 
             loss.backward()
             optimizer_S.step()
-            optimizer_T.step()
+            #optimizer_T.step()
 
             writer.add_scalar('G/g_loss', g_loss.item(), global_step=step)
             writer.add_scalar('G/t_loss', t_loss.item(), global_step=step)
@@ -298,9 +314,9 @@ for epoch in range(opt.n_epochs):
                 generator.eval()
                 student.eval()
                 teacher_sample = generator(z_sample)
-                save_image(teacher_sample.data[:25], "images/t_%d.png" % batches_done, nrow=5, normalize=True)
+                save_image(teacher_sample.data[:25], "%s/t_%d.png" % (img_dir,batches_done), nrow=5, normalize=True)
                 student_sample = student(z_sample)
-                save_image(student_sample.data[:25], "images/s_%d.png" % batches_done, nrow=5, normalize=True)
+                save_image(student_sample.data[:25], "%s/s_%d.png" % (img_dir,batches_done), nrow=5, normalize=True)
 
             batches_done += opt.n_critic
 
@@ -310,8 +326,8 @@ for epoch in range(opt.n_epochs):
                            'student': student.state_dict(),
                            'distillation': distillation.state_dict(),
                            'optimizer_D': optimizer_D.state_dict(),
-                           'optimizer_S': optimizer_S.state_dict(),
-                           'optimizer_T': optimizer_T.state_dict()},
+                           'optimizer_S': optimizer_S.state_dict()},
+                           #'optimizer_T': optimizer_T.state_dict()},
                           '%s/Epoch_(%d)_student.ckpt' % (ckpt_dir, epoch + 1),
                           max_keep=2)
 
