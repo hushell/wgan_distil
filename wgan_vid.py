@@ -13,7 +13,7 @@ import sys
 from tqdm import tqdm
 
 import torchvision.transforms as transforms
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 
 from torch.utils.data import DataLoader
 from torchvision import datasets
@@ -119,6 +119,8 @@ class Discriminator(nn.Module):
         img_flat = img.view(img.shape[0], -1)
         validity = self.model(img_flat)
         return validity
+
+
 
 
 # In[5]:
@@ -236,6 +238,9 @@ writer = tensorboardX.SummaryWriter(summ_dir)
 batches_done = 0
 
 z_sample = Variable(Tensor(np.random.normal(0, 1, (25, opt.latent_dim))))
+generator.eval()
+teacher_sample = generator(z_sample)
+save_image(teacher_sample.data[:25], "%s/t_%d.png" % (img_dir,batches_done), nrow=5, normalize=True)
 
 for epoch in range(opt.n_epochs):
     tdl = tqdm(iter(dataloader))
@@ -310,12 +315,11 @@ for epoch in range(opt.n_epochs):
                         epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item(), t_loss.item())
                 tdl.set_description(msg)
 
-                generator.eval()
                 student.eval()
-                teacher_sample = generator(z_sample)
-                save_image(teacher_sample.data[:25], "%s/t_%d.png" % (img_dir,batches_done), nrow=5, normalize=True)
                 student_sample = student(z_sample)
-                save_image(student_sample.data[:25], "%s/s_%d.png" % (img_dir,batches_done), nrow=5, normalize=True)
+                student_imgs = make_grid(student_sample.data[:25], nrow=5, normalize=True)
+                save_image(student_imgs, "%s/s_%d.png" % (img_dir,batches_done))
+                writer.add_image('I/%d' % batches_done, student_imgs, global_step=step)
 
             batches_done += opt.n_critic
 
