@@ -89,21 +89,26 @@ def init_weights(net, init_type='normal', init_gain=0.02):
         classname = m.__class__.__name__
         if hasattr(m, 'weight') and (classname.find('Conv') != -1 or classname.find('Linear') != -1):
             if init_type == 'normal':
-                init.normal_(m.weight.data, 0.0, init_gain)
+                #init.normal_(m.weight.data, 0.0, init_gain)
+                m.weight.data.normal_(0.0, init_gain)
             elif init_type == 'xavier':
-                init.xavier_normal_(m.weight.data, gain=init_gain)
+                #init.xavier_normal_(m.weight.data, gain=init_gain)
+                m.weight.data = init.xavier_norm(m.weight.data, gain=init_gain)
             elif init_type == 'kaiming':
-                init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
-            elif init_type == 'orthogonal':
-                init.orthogonal_(m.weight.data, gain=init_gain)
+                #init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
+                m.weight.data = init.kaiming_normal(m.weight.data, a=0, mode='fan_in')
             elif init_type == 'constant':
-                init.constant_(m.weight.data, 1.0)
+                #init.constant_(m.weight.data, 1.0)
+                m.weight.data.fill_(1.0)
             else:
                 raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
             if hasattr(m, 'bias') and m.bias is not None:
-                init.constant_(m.bias.data, 0.0)
+                #init.constant_(m.bias.data, 0.0)
+                m.bias.data.fill_(0.0)
         elif classname.find('BatchNorm2d') != -1:  # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
-            init.normal_(m.weight.data, 1.0, init_gain)
-            init.constant_(m.bias.data, 0.0)
+            #init.normal_(m.weight.data, 1.0, init_gain)
+            #init.constant_(m.bias.data, 0.0)
+            m.weight.data.normal_(1.0, init_gain)
+            m.bias.data.fill_(0.0)
 
     net.apply(init_func)  # apply the initialization function <init_func>

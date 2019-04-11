@@ -27,24 +27,22 @@ from data_loader import get_data_loader
 ##########################################################################
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataroot', required=True, help='./data')
+parser.add_argument('--dataroot', default='./data', help='where to store datasets')
 parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'fashion-mnist', 'cifar', 'stl10'],
                         help='The name of dataset')
-parser.add_argument('--download', type=str, default='True')
+parser.add_argument('--download', type=str, default='True', help='whether download')
 parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=2, help="number of cpu threads to use during batch generation")
-parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
-parser.add_argument("--img_size", type=int, default=28, help="size of each image dimension")
-parser.add_argument("--channels", type=int, default=1, help="number of image channels")
+parser.add_argument("--latent_dim", type=int, default=128, help="dimensionality of the latent space")
+parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--clip_value", type=float, default=0.01, help="lower and upper clip value for disc. weights")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument("--gpu_id", type=int, default=2, help="gpu id")
-parser.add_argument("--thin_factor", type=float, default=0.5, help="thinning generator by a factor")
 parser.add_argument("--dir", type=str, default='./', help="directory of each experiment")
 
 #sys.argv = 'main.py'
@@ -55,46 +53,57 @@ print(opt)
 os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpu_id)
 cuda = True if torch.cuda.is_available() else False
 
-img_shape = (opt.channels, opt.img_size, opt.img_size)
+channels = 1 if 'mnist' in opt.dataset else 3
+img_shape = (channels, opt.img_size, opt.img_size)
 
 #utils.mkdir(ckpt_dir)
 ckpt_dir = '%s/checkpoints' % opt.dir
 summ_dir = '%s/summaries' % opt.dir
 img_dir = '%s/images' % opt.dir
 
-os.makedirs(opt.dir, exist_ok=True)
-os.makedirs(ckpt_dir, exist_ok=True)
-os.makedirs(img_dir, exist_ok=True)
-os.makedirs(summ_dir, exist_ok=True)
+utils.mkdir([opt.dir, ckpt_dir, img_dir, summ_dir])
 
 
 ##########################################################################
 
+DIM = 128 # This overfits substantially; you're probably better off with 64
+
 class Generator(nn.Module):
-    def __init__(self, thin_factor=1.0):
+    def __init__(self):
         super(Generator, self).__init__()
-
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
-
-        self.model = nn.Sequential(
-            *block(opt.latent_dim, int(128*thin_factor), normalize=False),
-            *block(int(128*thin_factor), int(256*thin_factor)),
-            *block(int(256*thin_factor), int(512*thin_factor)),
-            *block(int(512*thin_factor), int(1024*thin_factor)),
-            nn.Linear(int(1024*thin_factor), int(np.prod(img_shape))),
-            nn.Tanh()
+        preprocess = nn.Sequential(
+            nn.Linear(opt.latent_dim, 4 * 4 * 4 * DIM),
+            nn.BatchNorm1d(4 * 4 * 4 * DIM),
+            nn.ReLU(True),
         )
 
-    def forward(self, z):
-        img = self.model(z)
-        img = img.view(img.shape[0], *img_shape)
-        return img
+        block1 = nn.Sequential(
+            nn.ConvTranspose2d(4 * DIM, 2 * DIM, 2, stride=2),
+            nn.BatchNorm2d(2 * DIM),
+            nn.ReLU(True),
+        )
+        block2 = nn.Sequential(
+            nn.ConvTranspose2d(2 * DIM, DIM, 2, stride=2),
+            nn.BatchNorm2d(DIM),
+            nn.ReLU(True),
+        )
+        deconv_out = nn.ConvTranspose2d(DIM, 3, 2, stride=2)
 
+        self.preprocess = preprocess
+        self.block1 = block1
+        self.block2 = block2
+        self.deconv_out = deconv_out
+        self.tanh = nn.Tanh()
+
+    def forward(self, input):
+        output = self.preprocess(input)
+        output = output.view(-1, 4 * DIM, 4, 4)
+        output = self.block1(output)
+        output = self.block2(output)
+        output = self.deconv_out(output)
+        output = self.tanh(output)
+        return output.view(-1, img_shape[0],
+                img_shape[1], img_shape[2])
 
 class Discriminator(nn.Module):
     def __init__(self):
@@ -138,7 +147,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
 
 ##########################################################################
 # Configure data loader
-dataloader, test_loader = get_data_loader(args)
+dataloader, test_loader = get_data_loader(opt)
 
 ##########################################################################
 # Loss weight for gradient penalty
@@ -162,7 +171,7 @@ if cuda:
     discriminator.cuda()
 
 try:
-    ckpt = utils.load_checkpoint('./checkpoints')
+    ckpt = utils.load_checkpoint(ckpt_dir)
     start_epoch = ckpt['epoch']
     discriminator.load_state_dict(ckpt['discriminator'])
     generator.load_state_dict(ckpt['generator'])
@@ -187,7 +196,6 @@ Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 
 ##########################################################################
-os.makedirs("images", exist_ok=True)
 writer = tensorboardX.SummaryWriter(summ_dir)
 
 batches_done = 0
@@ -195,7 +203,7 @@ batches_done = 0
 z_sample = Variable(Tensor(np.random.normal(0, 1, (25, opt.latent_dim))))
 
 for epoch in range(opt.n_epochs):
-    tdl = tqdm(dataloader)
+    tdl = dataloader
     for i, (imgs, targets) in enumerate(tdl):
 
         step = epoch * len(dataloader) + i + 1
@@ -233,8 +241,8 @@ for epoch in range(opt.n_epochs):
         d_loss.backward()
         optimizer_D.step()
 
-        writer.add_scalar('D/wd', wass_distance.item(), global_step=step)
-        writer.add_scalar('D/gp', gradient_penalty.item(), global_step=step)
+        writer.add_scalar('D/wd', wass_distance.data[0], global_step=step)
+        writer.add_scalar('D/gp', gradient_penalty.data[0], global_step=step)
 
         # -----------------
         #  Train Generator
@@ -256,13 +264,13 @@ for epoch in range(opt.n_epochs):
             g_loss.backward()
             optimizer_G.step()
 
-            writer.add_scalar('G/g_loss', g_loss.item(), global_step=step)
+            writer.add_scalar('G/g_loss', g_loss.data[0], global_step=step)
 
             # print and save
             if batches_done % opt.sample_interval == 0:
                 msg = '[Epoch %d/%d] [Batch %d/%d] [D: %.4f] [G: %.4f]' % (
-                        epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
-                tdl.set_description(msg)
+                        epoch, opt.n_epochs, i, len(dataloader), d_loss.data[0], g_loss.data[0])
+                print(msg)
 
                 generator.eval()
                 generator_sample = generator(z_sample)
@@ -277,7 +285,7 @@ for epoch in range(opt.n_epochs):
                            'discriminator': discriminator.state_dict(),
                            'generator': generator.state_dict(),
                            'optimizer_D': optimizer_D.state_dict(),
-                           'optimizer_G': optimizer_G.state_dict(),
+                           'optimizer_G': optimizer_G.state_dict()},
                           '%s/Epoch_(%d).ckpt' % (ckpt_dir, epoch + 1),
                           max_keep=2)
 
