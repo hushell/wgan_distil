@@ -33,9 +33,9 @@ parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'f
 parser.add_argument('--download', type=str, default='True', help='whether download')
 parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
-parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
+parser.add_argument("--lr", type=float, default=0.0001, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
+parser.add_argument("--b2", type=float, default=0.9, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=2, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=128, help="dimensionality of the latent space")
 parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
@@ -105,22 +105,29 @@ class Generator(nn.Module):
         return output.view(-1, img_shape[0],
                 img_shape[1], img_shape[2])
 
+
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, nh=DIM):
         super(Discriminator, self).__init__()
 
-        self.model = nn.Sequential(
-            nn.Linear(int(np.prod(img_shape)), 512),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(256, 1),
+        main = nn.Sequential(
+            nn.Conv2d(3, nh, 3, 2, padding=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(nh, 2*nh, 3, 2, padding=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(2*nh, 4*nh, 3, 2, padding=1),
+            nn.LeakyReLU(),
         )
 
-    def forward(self, img):
-        img_flat = img.view(img.shape[0], -1)
-        validity = self.model(img_flat)
-        return validity
+        self.main = main
+        self.linear = nn.Linear(4*4*4*nh, 1)
+        self.nh = nh
+
+    def forward(self, input):
+        output = self.main(input)
+        output = output.view(-1, 4*4*4*self.nh)
+        output = self.linear(output)
+        return output
 
 
 def compute_gradient_penalty(D, real_samples, fake_samples):
@@ -155,10 +162,12 @@ def generate_interpolation():
         alpha = i / float(number_int - 1)
         z_intp = z1*alpha + z2*(1.0 - alpha)
         generator_sample = generator(z_intp)
+        generator_sample = generator_sample.mul(0.5).add(0.5)
         images.append(generator_sample)
     for i in range(imgs.shape[0]):
         generator_sample = [images[j].data[i] for j in range(number_int)]
-        generator_imgs = make_grid(generator_sample, nrow=number_int, normalize=True, scale_each=True)
+        #generator_imgs = make_grid(generator_sample, nrow=number_int, normalize=True, scale_each=True)
+        generator_imgs = make_grid(generator_sample, nrow=number_int)
         save_image(generator_imgs, '%s/interpolate_%d_%d.png' % (img_dir, i, j))
         writer.add_image('interpolat/%d_%d' % (i, j), generator_imgs, global_step=step+1)
 
@@ -170,18 +179,18 @@ dataloader, test_loader = get_data_loader(opt)
 ##########################################################################
 # Loss weight for gradient penalty
 lambda_gp = 10
-lambda_distil = 0.01
+
+# (t, s, tc, sc)
 links = [
-   (4, 4, 64, 64),
-   (5, 5, 128, 128),
-   (6, 6, 256, 256),
-   (7, 7, 512, 512)
+   (0, 0, DIM, DIM//2),
+   (2, 2, 2*DIM, DIM),
+   (4, 4, 4*DIM, 2*DIM),
 ]
 
 # Models
 generator = Generator()
-#discriminator = Discriminator()
-discriminator = resnet18(num_classes=1, pretrained=True)
+discriminator = Discriminator()
+#discriminator = resnet18(num_classes=1, pretrained=True)
 utils.init_weights(generator)
 
 if cuda:
@@ -292,7 +301,9 @@ for epoch in range(opt.n_epochs):
 
                 generator.eval()
                 generator_sample = generator(z_sample)
-                generator_imgs = make_grid(generator_sample.data[:25], nrow=5, normalize=True)
+                generator_sample = generator_sample.mul(0.5).add(0.5)
+                #generator_imgs = make_grid(generator_sample.data[:25], nrow=5, normalize=True)
+                generator_imgs = make_grid(generator_sample.data[:25], nrow=5)
                 save_image(generator_imgs, "%s/%d.png" % (img_dir, batches_done))
                 writer.add_image('I/%d' % batches_done, generator_imgs, global_step=step)
 

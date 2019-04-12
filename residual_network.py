@@ -112,11 +112,12 @@ class ResNet(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 #nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                m.weight.data = nn.init.kaiming_normal(m.weight.data)
+                m.weight.data = nn.init.kaiming_normal(m.weight.data, mode='fan_out')
             elif isinstance(m, nn.BatchNorm2d):
                 #nn.init.constant_(m.weight, 1)
                 #nn.init.constant_(m.bias, 0)
-                m.weight.data.normal_(1.0, 0.02)
+                #m.weight.data.normal_(1.0, 0.02)
+                m.weight.data.fill_(1.0)
                 m.bias.data.fill_(0)
 
     def _make_layer(self, block, planes, blocks, stride=1):
@@ -147,7 +148,7 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
-        #x = self.avgpool(x)
+        #x = self.avgpool(x) # TODO: fix this
         x = x.view(x.size(0), -1)
         x = self.fc(x)
 
