@@ -128,7 +128,8 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     # Random weight term for interpolation between real and fake samples
     alpha = Tensor(np.random.random((real_samples.size(0), 1, 1, 1)))
     # Get random interpolation between real and fake samples
-    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
+    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples))
+    interpolates = Variable(interpolates, requires_grad=True)
     d_interpolates = D(interpolates)
     fake = Variable(Tensor(real_samples.shape[0], 1).fill_(1.0), requires_grad=False)
     # Get gradient w.r.t. interpolates
@@ -143,6 +144,23 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     gradients = gradients.view(gradients.size(0), -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
+
+
+def generate_interpolation():
+    z1 = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim))))
+    z2 = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim))))
+    images = []
+    number_int = 10
+    for i in range(number_int):
+        alpha = i / float(number_int - 1)
+        z_intp = z1*alpha + z2*(1.0 - alpha)
+        generator_sample = generator(z_intp)
+        images.append(generator_sample)
+    for i in range(imgs.shape[0]):
+        generator_sample = [images[j].data[i] for j in range(number_int)]
+        generator_imgs = make_grid(generator_sample, nrow=number_int, normalize=True, scale_each=True)
+        save_image(generator_imgs, '%s/interpolate_%d_%d.png' % (img_dir, i, j))
+        writer.add_image('interpolat/%d_%d' % (i, j), generator_imgs, global_step=step+1)
 
 
 ##########################################################################
@@ -274,7 +292,7 @@ for epoch in range(opt.n_epochs):
 
                 generator.eval()
                 generator_sample = generator(z_sample)
-                generator_imgs = make_grid(generator_sample.data[:25], nrow=5)
+                generator_imgs = make_grid(generator_sample.data[:25], nrow=5, normalize=True)
                 save_image(generator_imgs, "%s/%d.png" % (img_dir, batches_done))
                 writer.add_image('I/%d' % batches_done, generator_imgs, global_step=step)
 
