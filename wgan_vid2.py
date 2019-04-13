@@ -19,7 +19,7 @@ from torch.autograd import Variable
 
 import tensorboardX
 import utils
-from losses import Fit2DHomoGaussianLoss
+from losses import Fit2DHomoGaussianLoss, Fit2DMSELoss, Collapsed2DMSELoss
 #from residual_network import resnet18
 from data_loader import get_data_loader
 from inception_score import get_inception_score
@@ -48,6 +48,7 @@ parser.add_argument("--gpu_id", type=int, default=2, help="gpu id")
 parser.add_argument("--dir", type=str, default='./', help="directory of each experiment")
 parser.add_argument("--thin_factor", type=int, default=4, help="DIM // thin_factor")
 parser.add_argument("--lambda_distil", type=float, default=1e-3, help="coeff of distilation loss")
+parser.add_argument("--type_distil", type=str, default='vid', help="distillation type")
 
 #sys.argv = 'main.py'
 #sys.argv = sys.argv.split(' ')
@@ -246,7 +247,14 @@ generator = Generator()
 utils.init_weights(generator)
 #discriminator = Discriminator()
 #discriminator = resnet18(num_classes=1, pretrained=True)
-discriminator = VID(Fit2DHomoGaussianLoss, opt.thin_factor)
+if opt.type_distil == 'vid':
+    discriminator = VID(Fit2DHomoGaussianLoss, opt.thin_factor)
+elif opt.type_distil == 'mse':
+    discriminator = VID(Fit2DMSELoss, opt.thin_factor)
+elif opt.type_distil == 'att':
+    discriminator = VID(Collapsed2DMSELoss, opt.thin_factor)
+else:
+    raise ValueError('No such distillation loss!')
 
 if cuda:
     generator.cuda()
