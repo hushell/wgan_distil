@@ -22,6 +22,8 @@ import utils
 from losses import FitHomoGaussianLoss,Fit2DHomoGaussianLoss,MSELoss
 from residual_network import resnet18
 from data_loader import get_data_loader
+from inception_score import get_inception_score
+from itertools import chain
 
 
 ##########################################################################
@@ -227,11 +229,20 @@ Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 writer = tensorboardX.SummaryWriter(summ_dir)
 
 batches_done = 0
+stride = 1
 
-z_sample = Variable(Tensor(np.random.normal(0, 1, (25, opt.latent_dim))))
+try:
+    z_sample = np.load('%s/z_sample.npy' % ckpt_dir)
+    z_sample = torch.from_numpy(z_sample)
+    if cuda:
+        z_sample = z_sample.cuda()
+    z_sample = Variable(z_sample)
+except:
+    z_sample = Variable(Tensor(np.random.normal(0, 1, (25, opt.latent_dim))))
+    np.save('%s/z_sample' % ckpt_dir, z_sample.data.cpu().numpy())
 
 for epoch in range(opt.n_epochs):
-    tdl = dataloader
+    tdl = tqdm(dataloader)
     for i, (imgs, targets) in enumerate(tdl):
 
         step = epoch * len(dataloader) + i + 1
@@ -298,7 +309,29 @@ for epoch in range(opt.n_epochs):
             if batches_done % opt.sample_interval == 0:
                 msg = '[Epoch %d/%d] [Batch %d/%d] [D: %.4f] [G: %.4f]' % (
                         epoch, opt.n_epochs, i, len(dataloader), d_loss.data[0], g_loss.data[0])
-                print(msg)
+
+                if batches_done % (opt.sample_interval * stride) == 0:
+                    # Workaround because graphic card memory can't store more than 830 examples in memory for generating image
+                    # Therefore doing loop and generating 800 examples and stacking into list of samples to get 8000 generated images
+                    # This way Inception score is more correct since there are different generated examples from every class of Inception model
+                    sample_list = []
+                    for i in range(10):
+                        z = Variable(Tensor(np.random.normal(0, 1, (800, opt.latent_dim))))
+                        samples = generator(z)
+                        sample_list.append(samples.data.cpu().numpy())
+
+                    # Flattening list of list into one list
+                    new_sample_list = list(chain.from_iterable(sample_list))
+                    #print("Calculating Inception Score over 8k generated images")
+                    # Feeding list of numpy arrays
+                    inception_score = get_inception_score(new_sample_list, cuda=True, batch_size=32,
+                                                          resize=True, splits=10)
+                    msg += ' [IS: %.4f]' % inception_score[0]
+                    writer.add_scalar('G/inception_score_mean', inception_score[0], global_step=step)
+                    writer.add_scalar('G/inception_score_std', inception_score[1], global_step=step)
+
+                #print(msg)
+                tdl.set_description(msg)
 
                 generator.eval()
                 generator_sample = generator(z_sample)
@@ -308,6 +341,8 @@ for epoch in range(opt.n_epochs):
                 save_image(generator_imgs, "%s/%d.png" % (img_dir, batches_done))
                 writer.add_image('I/%d' % batches_done, generator_imgs, global_step=step)
 
+            if batches_done % 1e4 == 1e4 - opt.n_critic:
+                stride = min(stride*2, 16)
             batches_done += opt.n_critic
 
     # checkpoint at epoch

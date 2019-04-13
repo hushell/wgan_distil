@@ -22,6 +22,8 @@ import utils
 from losses import Fit2DHomoGaussianLoss
 #from residual_network import resnet18
 from data_loader import get_data_loader
+from inception_score import get_inception_score
+from itertools import chain
 
 
 ##########################################################################
@@ -44,6 +46,8 @@ parser.add_argument("--clip_value", type=float, default=0.01, help="lower and up
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument("--gpu_id", type=int, default=2, help="gpu id")
 parser.add_argument("--dir", type=str, default='./', help="directory of each experiment")
+parser.add_argument("--thin_factor", type=int, default=4, help="DIM // thin_factor")
+parser.add_argument("--lambda_distil", type=float, default=1e-3, help="coeff of distilation loss")
 
 #sys.argv = 'main.py'
 #sys.argv = sys.argv.split(' ')
@@ -179,21 +183,21 @@ dataloader, test_loader = get_data_loader(opt)
 ##########################################################################
 # Loss weight for gradient penalty
 lambda_gp = 10
-lambda_distil = 1e-3
-
-# (t, s, tc, sc)
-links = [
-   (0, 0, DIM, DIM//2),
-   (2, 2, 2*DIM, DIM),
-   (4, 4, 4*DIM, 2*DIM),
-]
+lambda_distil = opt.lambda_distil
 
 class VID(nn.Module):
-    def __init__(self, criterion, links):
+    def __init__(self, criterion, thin_factor=2):
         super(VID, self).__init__()
 
         self.teacher = Discriminator(nh=DIM)
-        self.student = Discriminator(nh=DIM//2)
+        self.student = Discriminator(nh=DIM//thin_factor)
+
+        # (t, s, tc, sc)
+        links = [
+           (0, 0, DIM, DIM//thin_factor),
+           (2, 2, 2*DIM, 2*DIM//thin_factor),
+           (4, 4, 4*DIM, 4*DIM//thin_factor),
+        ]
 
         self.criterion = criterion
         self.links = links
@@ -242,7 +246,7 @@ generator = Generator()
 utils.init_weights(generator)
 #discriminator = Discriminator()
 #discriminator = resnet18(num_classes=1, pretrained=True)
-discriminator = VID(Fit2DHomoGaussianLoss, links)
+discriminator = VID(Fit2DHomoGaussianLoss, opt.thin_factor)
 
 if cuda:
     generator.cuda()
@@ -277,11 +281,22 @@ Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 writer = tensorboardX.SummaryWriter(summ_dir)
 
 batches_done = 0
+stride = 1
 
-z_sample = Variable(Tensor(np.random.normal(0, 1, (25, opt.latent_dim))))
+try:
+    z_sample = np.load('%s/z_sample.npy' % ckpt_dir)
+    z_sample = torch.from_numpy(z_sample)
+    if cuda:
+        z_sample = z_sample.cuda()
+    z_sample = Variable(z_sample)
+    print('Load %s/z_sample.npy' % ckpt_dir)
+except:
+    z_sample = Variable(Tensor(np.random.normal(0, 1, (25, opt.latent_dim))))
+    np.save('%s/z_sample' % ckpt_dir, z_sample.data.cpu().numpy())
+    print('Save %s/z_sample.npy' % ckpt_dir)
 
 for epoch in range(opt.n_epochs):
-    tdl = dataloader
+    tdl = tqdm(dataloader)
     for i, (imgs, targets) in enumerate(tdl):
 
         step = epoch * len(dataloader) + i + 1
@@ -357,7 +372,29 @@ for epoch in range(opt.n_epochs):
             if batches_done % opt.sample_interval == 0:
                 msg = '[Epoch %d/%d] [Batch %d/%d] [D: %.4f] [G: %.4f]' % (
                         epoch, opt.n_epochs, i, len(dataloader), d_loss.data[0], g_loss.data[0])
-                print(msg)
+
+                if batches_done % (opt.sample_interval * stride) == 0:
+                    # Workaround because graphic card memory can't store more than 830 examples in memory for generating image
+                    # Therefore doing loop and generating 800 examples and stacking into list of samples to get 8000 generated images
+                    # This way Inception score is more correct since there are different generated examples from every class of Inception model
+                    sample_list = []
+                    for i in range(10):
+                        z = Variable(Tensor(np.random.normal(0, 1, (800, opt.latent_dim))))
+                        samples = generator(z)
+                        sample_list.append(samples.data.cpu().numpy())
+
+                    # Flattening list of list into one list
+                    new_sample_list = list(chain.from_iterable(sample_list))
+                    #print("Calculating Inception Score over 8k generated images")
+                    # Feeding list of numpy arrays
+                    inception_score = get_inception_score(new_sample_list, cuda=True, batch_size=32,
+                                                          resize=True, splits=10)
+                    msg += ' [IS: %.4f]' % inception_score[0]
+                    writer.add_scalar('G/inception_score_mean', inception_score[0], global_step=step)
+                    writer.add_scalar('G/inception_score_std', inception_score[1], global_step=step)
+
+                #print(msg)
+                tdl.set_description(msg)
 
                 generator.eval()
                 generator_sample = generator(z_sample)
@@ -366,7 +403,10 @@ for epoch in range(opt.n_epochs):
                 save_image(generator_imgs, "%s/%d.png" % (img_dir, batches_done))
                 writer.add_image('I/%d' % batches_done, generator_imgs, global_step=step)
 
+            if batches_done % 1e4 == 1e4 - opt.n_critic:
+                stride = min(stride*2, 16)
             batches_done += opt.n_critic
+
 
     # checkpoint at epoch
     utils.save_checkpoint({'epoch': epoch + 1,
