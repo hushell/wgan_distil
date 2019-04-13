@@ -19,8 +19,8 @@ from torch.autograd import Variable
 
 import tensorboardX
 import utils
-from losses import FitHomoGaussianLoss,Fit2DHomoGaussianLoss,MSELoss
-from residual_network import resnet18
+from losses import Fit2DHomoGaussianLoss
+#from residual_network import resnet18
 from data_loader import get_data_loader
 
 
@@ -38,7 +38,6 @@ parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first 
 parser.add_argument("--b2", type=float, default=0.9, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=2, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=128, help="dimensionality of the latent space")
-parser.add_argument("--n_h", type=int, default=128, help="dimensionality of the latent space")
 parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--clip_value", type=float, default=0.01, help="lower and upper clip value for disc. weights")
@@ -180,6 +179,7 @@ dataloader, test_loader = get_data_loader(opt)
 ##########################################################################
 # Loss weight for gradient penalty
 lambda_gp = 10
+lambda_distil = 1e-3
 
 # (t, s, tc, sc)
 links = [
@@ -188,36 +188,86 @@ links = [
    (4, 4, 4*DIM, 2*DIM),
 ]
 
+class VID(nn.Module):
+    def __init__(self, criterion, links):
+        super(VID, self).__init__()
+
+        self.teacher = Discriminator(nh=DIM)
+        self.student = Discriminator(nh=DIM//2)
+
+        self.criterion = criterion
+        self.links = links
+
+        self.features = []
+        self.register_hook()
+
+        # Freeze teacher parameters
+        for param in self.teacher.parameters():
+            param.requires_grad = False
+
+    def register_hook(self):
+        def _hook(module, input, output):
+            self.features.append(output)
+
+        teacher_modules = list(self.teacher.main.children())
+        student_modules = list(self.student.main.children())
+
+        for i, (t, s, tc, sc) in enumerate(self.links):
+            teacher_modules[t].register_forward_hook(_hook)
+            student_modules[s].register_forward_hook(_hook)
+            self.add_module("criterion{}".format(i), self.criterion(
+                input_plane=sc,
+                target_plane=tc,
+                normalize=False))
+
+    def forward(self, images):
+        self.features = []
+
+        out = self.student(images)
+        _ = self.teacher(images)
+
+        reg_loss = []
+        for i, (feature1, feature2) in enumerate(zip(
+            self.features[:int(len(self.features)/2)],
+            self.features[int(len(self.features)/2):])):
+
+            _criterion = self._modules.get("criterion{}".format(i))
+            reg_loss.append(lambda_distil * _criterion(feature1, feature2))
+
+        return out, reg_loss
+
+
 # Models
 generator = Generator()
-discriminator = Discriminator(nh=opt.n_h)
-#discriminator = resnet18(num_classes=1, pretrained=True)
 utils.init_weights(generator)
+#discriminator = Discriminator()
+#discriminator = resnet18(num_classes=1, pretrained=True)
+discriminator = VID(Fit2DHomoGaussianLoss, links)
 
 if cuda:
     generator.cuda()
     discriminator.cuda()
 
 try:
-    ckpt = utils.load_checkpoint(ckpt_dir)
-    start_epoch = ckpt['epoch']
-    discriminator.load_state_dict(ckpt['discriminator'])
-    generator.load_state_dict(ckpt['generator'])
-    optimizer_D.load_state_dict(ckpt['optimizer_D'])
-    optimizer_G.load_state_dict(ckpt['optimizer_G'])
+    ckpt = utils.load_checkpoint('./CIFAR10_disc/checkpoints')
+    start_epoch = 0
+    discriminator.teacher.load_state_dict(ckpt['discriminator'])
+    #generator.load_state_dict(ckpt['generator'])
 except:
     print(' [*] No checkpoint!')
     start_epoch = 0
 
-# Freeze teacher parameters
-#for param in generator.parameters():
-#    param.requires_grad = False
-
 
 ##########################################################################
 # Optimizers
+
+trainable_parameters = [p for p in discriminator.parameters() if p.requires_grad]
+for k,v in discriminator.named_parameters():
+    if v.requires_grad:
+        print(k, v.shape)
+
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_D = torch.optim.Adam(trainable_parameters, lr=opt.lr, betas=(opt.b1, opt.b2))
 
 # TODO: torch.set_default_tensor_type(t) OR device, randn
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
@@ -238,7 +288,7 @@ for epoch in range(opt.n_epochs):
 
         generator.train()
         discriminator.train()
-        for p in discriminator.parameters():  # reset requires_grad
+        for p in trainable_parameters:  # reset requires_grad
             p.requires_grad = True  # they are set to False below in netG update
 
         # Configure input
@@ -257,26 +307,35 @@ for epoch in range(opt.n_epochs):
         fake_imgs = generator(z)
 
         # Real images
-        real_validity = discriminator(real_imgs)
+        #real_validity, real_reg_loss = discriminator(real_imgs)
+        real_validity = discriminator.student(real_imgs)
         # Fake images
-        fake_validity = discriminator(fake_imgs)
+        fake_validity, fake_reg_loss = discriminator(fake_imgs)
         # Gradient penalty
-        gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
+        gradient_penalty = compute_gradient_penalty(discriminator.student, real_imgs.data, fake_imgs.data)
         # Adversarial loss
         wass_distance = torch.mean(real_validity) - torch.mean(fake_validity)
-        d_loss = -wass_distance + lambda_gp * gradient_penalty
+        #d_loss = -wass_distance + lambda_gp * gradient_penalty
+        d_loss = -wass_distance + lambda_gp * gradient_penalty + sum(fake_reg_loss)
+        #d_loss = -wass_distance + lambda_gp * gradient_penalty + sum(fake_reg_loss) + sum(real_reg_loss)
 
         d_loss.backward()
         optimizer_D.step()
 
         writer.add_scalar('D/wd', wass_distance.data[0], global_step=step)
         writer.add_scalar('D/gp', gradient_penalty.data[0], global_step=step)
+        writer.add_scalar('D/fake_reg_0', fake_reg_loss[0].data[0], global_step=step)
+        writer.add_scalar('D/fake_reg_1', fake_reg_loss[1].data[0], global_step=step)
+        writer.add_scalar('D/fake_reg_2', fake_reg_loss[2].data[0], global_step=step)
+        #writer.add_scalar('D/real_reg_0', real_reg_loss[0].data[0], global_step=step)
+        #writer.add_scalar('D/real_reg_1', real_reg_loss[1].data[0], global_step=step)
+        #writer.add_scalar('D/real_reg_2', real_reg_loss[2].data[0], global_step=step)
 
         # -----------------
         #  Train Generator
         # -----------------
 
-        for p in discriminator.parameters():
+        for p in trainable_parameters:
             p.requires_grad = False  # to avoid computation
         optimizer_G.zero_grad()
 
@@ -286,7 +345,7 @@ for epoch in range(opt.n_epochs):
             teacher_imgs = generator(z)
             fake_imgs = generator(z)
 
-            fake_validity = discriminator(fake_imgs)
+            fake_validity = discriminator.student(fake_imgs)
             g_loss = -torch.mean(fake_validity)
 
             g_loss.backward()
@@ -303,7 +362,6 @@ for epoch in range(opt.n_epochs):
                 generator.eval()
                 generator_sample = generator(z_sample)
                 generator_sample = generator_sample.mul(0.5).add(0.5)
-                #generator_imgs = make_grid(generator_sample.data[:25], nrow=5, normalize=True)
                 generator_imgs = make_grid(generator_sample.data[:25], nrow=5)
                 save_image(generator_imgs, "%s/%d.png" % (img_dir, batches_done))
                 writer.add_image('I/%d' % batches_done, generator_imgs, global_step=step)
